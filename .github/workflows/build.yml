@@ -115,6 +115,10 @@ jobs:
             contract-executor/target/contract-executor-*.jar
             sc-api-support/target/sc-api-support-*.jar
 
+      # after the upload: the jars above are the ones the package step built
+      - name: Unit tests of the Thrift handler
+        run: $MVN -pl contract-executor -am test -Dtest=ContractExecutorHandlerTest -DfailIfNoTests=false
+
   # The token scenarios of EnzinoBB/node (ci/contracts/executor_harness.py) on the release executor and
   # on this build, through their Thrift interface with a stub of the node: every answer (status, return
   # value, state hashes, emitted transactions) must be the same, or contracts would give different

@@ -7,6 +7,7 @@ import com.credits.general.thrift.generated.APIResponse;
 import com.credits.general.thrift.generated.ByteCodeObject;
 import com.credits.general.thrift.generated.ClassObject;
 import com.credits.general.thrift.generated.Variant;
+import com.credits.general.util.compiler.CompilationException;
 import com.credits.scapi.v2.SmartContract;
 import com.credits.thrift.ContractExecutorHandler;
 import exception.ContractExecutorException;
@@ -182,6 +183,21 @@ public class ContractExecutorHandlerTest {
         assertVersionIsInvalid(contractExecutorHandler.getContractVariables(List.of(mock(ByteCodeObject.class)),
                                                                             contractState,
                                                                             invalidVersion).getStatus());
+    }
+
+    @Test
+    @DisplayName("compileSourceCode must return the compiler errors of a CompilationException")
+    void compileSourceCodeReturnsCompilationErrors() throws Exception {
+        when(mockCEService.compileContractClass(any())).thenThrow(
+                new CompilationException("Contract", List.of(new CompilationException.Error(7, "';' expected"),
+                                                              new CompilationException.Error(12, "cannot find symbol"))));
+
+        var result = contractExecutorHandler.compileSourceCode("broken source", API_VERSION);
+
+        assertThat(result.getStatus().code, is(FAILURE.code));
+        assertThat(result.getStatus().getMessage(), containsString("CompilationException"));
+        assertThat(result.getStatus().getMessage(), containsString("7:';' expected"));
+        assertThat(result.getStatus().getMessage(), containsString("12:cannot find symbol"));
     }
 
     @Test
