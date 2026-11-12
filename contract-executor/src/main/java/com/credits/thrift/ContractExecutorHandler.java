@@ -205,7 +205,10 @@ public class ContractExecutorHandler implements ContractExecutor.Iface {
         } catch (Throwable e) {
             result = new CompileSourceCodeResult(defineFailureCode(e), emptyList());
         }
-        logger.debug("compileBytecode --> {} amountByteCodeObjects={}", result.status, result.byteCodeObjects.size());
+        // byteCodeObjects stays null after a CompilationException: a NullPointerException here would
+        // replace the compiler's error list with "Internal error processing compileSourceCode"
+        logger.debug("compileBytecode --> {} amountByteCodeObjects={}",
+                     result.status, result.byteCodeObjects == null ? 0 : result.byteCodeObjects.size());
         return result;
     }
 

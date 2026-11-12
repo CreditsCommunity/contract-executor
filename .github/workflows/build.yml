@@ -1,0 +1,217 @@
+name: Build
+
+# Reproducible build of contract-executor build 1518 (the executor of node release mainnet-4.2.532.0).
+# Its Credits dependencies were never published to the maven branches the poms point at
+# (sc-api-internal 2.2, general 1.3, executor_client 1.4), so they are built here from their
+# repositories first; node_client 1.4 and general 1.2 come from third-party/mvn-repo, a copy of
+# those branches. Nothing is fetched from CREDITSCOM: every repository except Maven Central is
+# mirrored to third-party/mvn-repo (third-party/maven-settings.xml), and the build log is checked.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VENDORED_MAVEN_REPO: ${{ github.workspace }}/third-party/mvn-repo
+  MVN: mvn -B -s ${{ github.workspace }}/third-party/maven-settings.xml
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the build reads the commit count (git.total.commit.count) the node checks
+
+      - name: Checkout smart-contract-api
+        uses: actions/checkout@v4
+        with:
+          repository: EnzinoBB/smart-contract-api
+          ref: 677c567f308972224232023b18de531d22db2b8b  # build/reproducible-1518 = CREDITSCOM dev: sc-api-internal 2.2
+          path: deps/smart-contract-api
+
+      - name: Checkout thrift-api-client
+        uses: actions/checkout@v4
+        with:
+          repository: EnzinoBB/thrift-api-client
+          ref: build/reproducible-1518  # 59d1e9af (before the libthrift 0.14 bump) + Eclipse pins
+          path: deps/thrift-api-client
+
+      # build 1518 was compiled with JDK 11.0.3 (Build-Jdk: 11.0.3-ojdkbuild); later 11.0.x javac
+      # versions generate different string concatenation code in a few toString() methods
+      - name: Set up Java 11.0.3
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '11.0.3'
+          cache: maven
+          # a new cache key: the first run resolves everything with the vendored mirror in place
+          cache-dependency-path: |
+            **/pom.xml
+            third-party/maven-settings.xml
+
+      # not quiet: the transfer log is checked for CREDITSCOM URLs below
+      - name: Build dependencies
+        run: |
+          set -o pipefail
+          (cd deps/thrift-api-client && $MVN -DskipTests install) | tee -a "$RUNNER_TEMP/mvn.log"
+          (cd deps/smart-contract-api && $MVN -DskipTests install) | tee -a "$RUNNER_TEMP/mvn.log"
+
+      - name: Build contract executor
+        run: |
+          set -o pipefail
+          $MVN -DskipTests package | tee -a "$RUNNER_TEMP/mvn.log"
+          ls -la contract-executor/target/*.jar sc-api-support/target/*.jar
+
+      - name: Check that nothing came from CREDITSCOM
+        run: |
+          grep 'Downloaded from vendored' "$RUNNER_TEMP/mvn.log" || true  # empty when the Maven cache already has them
+          if grep -inE 'creditscom|raw\.github' "$RUNNER_TEMP/mvn.log"; then
+            echo "::error::the build accessed a CREDITSCOM repository"; exit 1
+          fi
+
+      - name: Module descriptors of the built jars
+        if: always()
+        run: |
+          for jar in sc-api-support/target/*.jar contract-executor/target/*.jar; do
+            [ -f "$jar" ] || continue
+            echo "== $jar"
+            unzip -l "$jar" | grep -c 'module-info.class' || true
+            (cd "$(mktemp -d)" && unzip -oq "$OLDPWD/$jar" module-info.class 2>/dev/null && javap module-info.class | head -2) || true
+          done
+
+      # compare with the executor shipped in the mainnet release, class by class
+      - name: Compare with the mainnet executor
+        run: |
+          curl -sSfL https://github.com/CREDITSCOM/node/releases/download/mainnet-4.2.532.0/Ubuntu20_Mainnet-4.2.532.0.tar.gz \
+            | tar -xzf - csnode/contract-executor.jar csnode/sc-api-support.jar
+          python3 - <<'PY'
+          import glob, hashlib, zipfile
+          def classes(path):
+              z = zipfile.ZipFile(path)
+              return {n: hashlib.sha1(z.read(n)).hexdigest() for n in z.namelist() if n.endswith(".class")}
+          # every jar the build produced (plain and with dependencies) against its release counterpart
+          pairs = [("csnode/contract-executor.jar", p) for p in glob.glob("contract-executor/target/*.jar")]
+          pairs += [("csnode/sc-api-support.jar", p) for p in glob.glob("sc-api-support/target/*.jar")]
+          for release, built in pairs:
+              a, b = classes(release), classes(built)
+              same = [n for n in a if b.get(n) == a[n]]
+              differ = sorted(n for n in a if n in b and b[n] != a[n])
+              print(f"{built}: {len(same)}/{len(a)} classes identical to {release}, {len(differ)} differ, "
+                    f"{len(set(a) - set(b))} missing, {len(set(b) - set(a))} extra")
+              for n in differ[:20]:
+                  print("  differs:", n)
+          PY
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-executor-${{ github.sha }}
+          path: |
+            contract-executor/target/contract-executor-*.jar
+            sc-api-support/target/sc-api-support-*.jar
+
+      # after the upload: the jars above are the ones the package step built
+      - name: Unit tests of the Thrift handler
+        run: $MVN -pl contract-executor -am test -Dtest=ContractExecutorHandlerTest -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false
+
+  # The token scenarios of EnzinoBB/node (ci/contracts/executor_harness.py) on the release executor and
+  # on this build, through their Thrift interface with a stub of the node: every answer (status, return
+  # value, state hashes, emitted transactions) must be the same, or contracts would give different
+  # results on the nodes running this build.
+  compare-results:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Download jars
+        uses: actions/download-artifact@v4
+        with:
+          name: contract-executor-${{ github.sha }}
+          path: jars
+
+      - name: Checkout the harness
+        uses: actions/checkout@v4
+        with:
+          repository: EnzinoBB/node
+          path: node
+          sparse-checkout: |
+            ci/contracts
+            samples/contracts
+
+      - name: Checkout the Thrift definitions
+        uses: actions/checkout@v4
+        with:
+          repository: CREDITSCOM/thrift-interface-definitions
+          ref: 35620f5de439ba02d5f32aaf0a9e4825575afed5  # the node's submodule
+          path: node/third-party/thrift-interface-definitions
+
+      - name: Release executor and its JDK
+        run: |
+          curl -sSfL https://github.com/CREDITSCOM/node/releases/download/mainnet-4.2.532.0/Ubuntu20_Mainnet-4.2.532.0.tar.gz \
+            | tar -xzf - csnode/contract-executor.jar csnode/sc-api-support.jar csnode/ojdkbuild
+          # laid out like the release: the manifest loads sc-api-support.jar from the jar's directory
+          mkdir built
+          cp "$(ls -S jars/contract-executor/target/contract-executor-*.jar | head -1)" built/contract-executor.jar
+          cp "$(ls -S jars/sc-api-support/target/sc-api-support-*.jar | head -1)" built/sc-api-support.jar
+          python3 -m pip install --quiet thriftpy2 base58
+
+      - name: Compare
+        run: |
+          python3 node/ci/contracts/executor_harness.py \
+            --jar csnode/contract-executor.jar --jar built/contract-executor.jar \
+            --jdk csnode/ojdkbuild/java-11-openjdk-11.0.4 --work harness-run --json harness.json
+
+      - name: Upload the answers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-${{ github.sha }}
+          path: |
+            harness.json
+            harness-run/*/executor.log
+
+  # A tag executor-<name> publishes the jars under the names the node release uses: the jar with
+  # dependencies as contract-executor.jar (its manifest loads sc-api-support.jar from its directory)
+  # and the sc-api-support assembly as sc-api-support.jar. The community node packages take them
+  # from here.
+  release:
+    needs: [build, compare-results]
+    if: startsWith(github.ref, 'refs/tags/executor-')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download jars
+        uses: actions/download-artifact@v4
+        with:
+          name: contract-executor-${{ github.sha }}
+          path: jars
+
+      - name: Publish
+        run: |
+          mkdir release
+          cp "$(ls -S jars/contract-executor/target/contract-executor-*.jar | head -1)" release/contract-executor.jar
+          cp "$(ls -S jars/sc-api-support/target/sc-api-support-*.jar | head -1)" release/sc-api-support.jar
+          unzip -p release/contract-executor.jar git.properties | tee git.properties
+          (cd release && sha256sum *.jar > SHA256SUMS && cat SHA256SUMS)
+          commits=$(sed -n 's/^git.total.commit.count=//p' git.properties | tr -d '\r')
+          cat > notes.md <<NOTES
+          Contract executor build ${commits} from ${GITHUB_REPOSITORY}@${GITHUB_SHA}: build 1518 of the
+          mainnet release 4.2.532.0 with the compatible fixes merged since. Built with JDK 11.0.3 and
+          nothing fetched from CREDITSCOM (see BUILDING.md).
+
+          A node accepts it only with executor_commit_max >= ${commits} in config.ini.
+          NOTES
+          # executor-<name>-rc<N>: a pre-release, which the set-up of the node packages (it takes the
+          # latest release) does not download
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-rc*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" $prerelease \
+            --title "Contract executor ${GITHUB_REF_NAME#executor-} (build ${commits})" --notes-file notes.md
