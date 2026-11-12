@@ -18,11 +18,16 @@ Related repositories of [CreditsCommunity](https://github.com/CreditsCommunity):
 
 ## Branches: read this first
 
-- `master` is the upstream CREDITSCOM history (build 1518 plus a README commit). It has no CI and
-  no longer builds from source as published.
-- The community line is the branch **`build/reproducible-1518`**: a reproducible build of 1518
-  (`BUILDING.md`), the CI, the release workflow and the compatible fixes. Pull requests go there;
-  the releases `executor-community-N` are tagged on it.
+- **`master`** is the trunk: the upstream CREDITSCOM history (build 1518 plus a README commit) with
+  the community line merged into it (November 2026). It holds the reproducible build of 1518
+  (`BUILDING.md`), the CI, the release workflow and the compatible fixes. Pull requests go to
+  `master`.
+- `build/reproducible-1518` is where that work was done until the merge; the releases up to
+  `executor-community-3` (build 1558) were tagged on it. It is kept and still builds, but new work
+  goes to `master`. Never delete it or rewrite it: the published releases point into it.
+- The build number is the commit count of the commit built, so a build of `master` reports a higher
+  number than the same code on `build/reproducible-1518` (the merge added the README commit, the docs
+  commits and merge commits). This only changes the number, not the code; see Pitfalls.
 
 ## Platform constraints
 
@@ -37,7 +42,7 @@ Related repositories of [CreditsCommunity](https://github.com/CreditsCommunity):
 - Amounts in `sendTransaction` are `double`s. A call whose arguments do not match the declared
   types fails, and the fee is still paid.
 
-## Layout (on `build/reproducible-1518`)
+## Layout
 
 | Path | Contents |
 |---|---|
@@ -64,7 +69,7 @@ $MVN -pl contract-executor -am test -Dtest=ContractExecutorHandlerTest -DfailIfN
 
 Jars: `contract-executor/target/contract-executor-v0.8.4-b<N>.jar`, `sc-api-support/target/sc-api-support-v0.8.4-b<N>.jar`.
 
-## CI (`build.yml`, on `build/reproducible-1518`)
+## CI (`build.yml`)
 
 On every push and pull request:
 
@@ -78,7 +83,7 @@ On every push and pull request:
 
 ## Conventions
 
-- One topic per pull request, against `build/reproducible-1518`. Commit subjects start with the
+- One topic per pull request, against `master`. Commit subjects start with the
   part they change (`executor:`, `sc-api-support:`, `build:`, `ci:`).
 - Docs, comments and commit messages in English.
 - Never `git add -A` or `git add .`: stage explicit paths. Never delete branches after a merge.
@@ -88,7 +93,8 @@ On every push and pull request:
 - The node accepts an executor only if its build number (git commit count) is within
   `executor_commit_min`..`executor_commit_max` of its `config.ini`; the official config pins
   1518..1518. Commits on top of 1518 raise the count, so a community build needs a higher
-  `executor_commit_max`. Squashing or rewriting history changes the count.
+  `executor_commit_max`. Squashing or rewriting history changes the count; every merge commit
+  raises it. The release notes print the build number and the `executor_commit_max` it needs.
 - Do not bump dependency versions: `org.eclipse.jdt.core`, the Eclipse bundles and
   `maven-assembly-plugin` are pinned to what 1518 bundled, and thrift-api-client after its libthrift
   0.14 bump breaks `executor_client`'s `module-info`.
@@ -97,7 +103,7 @@ On every push and pull request:
 
 ## More
 
-- `BUILDING.md`, `third-party/README.md` (on `build/reproducible-1518`)
+- `BUILDING.md`, `third-party/README.md`
 - The node's `samples/contracts/README.md` (how contracts are written, what the sandbox refuses),
   `docs/tokens.md`, `ci/contracts/`
 - Maintainers' agents: a shared Basic Memory knowledge base (project `credits`) holds platform facts,
